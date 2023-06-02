@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-# tfdoc:file:description Network monitoring dashboards.
+# tfdoc:file:description Network monitoring dashboards and alerts.
 
 locals {
   dashboard_path  = "${var.factories_config.data_dir}/dashboards"
@@ -29,4 +29,88 @@ resource "google_monitoring_dashboard" "dashboard" {
   for_each       = local.dashboards
   project        = module.landing-project.project_id
   dashboard_json = file(each.value)
+}
+
+# VPN alerts
+
+resource "google_monitoring_alert_policy" "vpn_tunnel_established" {
+  count = var.alert_config.vpn_tunnel_established != null ? 1 : 0
+
+  project               = module.landing-project.project_id
+  display_name          = "VPN Tunnel Established"
+  enabled               = var.alert_config.vpn_tunnel_established.enabled
+  notification_channels = var.alert_config.vpn_tunnel_established.notification_channels
+  user_labels           = var.alert_config.vpn_tunnel_established.user_labels
+  combiner              = "OR"
+
+  conditions {
+    display_name = "VPN Tunnel Established"
+
+    condition_monitoring_query_language {
+      query = join("", [
+        "fetch vpn_gateway",
+        "| metric vpn.googleapis.com/tunnel_established",
+        "| group_by 5m, [value_tunnel_established_max: max(value.tunnel_established)]",
+        "| every 5m",
+        "| condition val() < 1 '1'",
+      ])
+
+      duration = var.alert_config.vpn_tunnel_established.duration
+
+      trigger {
+        count = "1"
+      }
+    }
+  }
+
+  dynamic "alert_strategy" {
+    for_each = var.alert_config.vpn_tunnel_established.auto_close != null ? [1] : []
+
+    content {
+      auto_close = var.alert_config.vpn_tunnel_established.auto_close
+    }
+  }
+}
+
+# https://cloud.google.com/network-connectivity/docs/vpn/how-to/viewing-logs-metrics#define-bandwidth-alerts
+resource "google_monitoring_alert_policy" "vpn_tunnel_bandwidth" {
+  count = var.alert_config.vpn_tunnel_bandwidth != null ? 1 : 0
+
+  project               = module.landing-project.project_id
+  display_name          = "VPN Tunnel Bandwidth usage"
+  enabled               = var.alert_config.vpn_tunnel_bandwidth.enabled
+  notification_channels = var.alert_config.vpn_tunnel_bandwidth.notification_channels
+  user_labels           = var.alert_config.vpn_tunnel_bandwidth.user_labels
+  combiner              = "OR"
+
+  conditions {
+    display_name = "VPN Tunnel Bandwidth usage"
+
+    condition_monitoring_query_language {
+      query = join("", [
+        "fetch vpn_gateway",
+        "| { metric vpn.googleapis.com/network/sent_bytes_count",
+        "; metric vpn.googleapis.com/network/received_bytes_count }",
+        "| align rate (1m)",
+        "| group_by [metric.tunnel_name]",
+        "| outer_join 0,0",
+        "| value val(0) + val(1)",
+        "| condition val() > ${var.alert_config.vpn_tunnel_bandwidth.threshold_mbys} \"MBy/s\"",
+      ])
+
+      duration = var.alert_config.vpn_tunnel_bandwidth.duration
+
+      trigger {
+        count = "1"
+      }
+    }
+  }
+
+  dynamic "alert_strategy" {
+    for_each = var.alert_config.vpn_tunnel_bandwidth.auto_close != null ? [1] : []
+
+    content {
+      auto_close = var.alert_config.vpn_tunnel_bandwidth.auto_close
+    }
+  }
 }
